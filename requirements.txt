@@ -1,0 +1,6 @@
+pymupdf
+PyPDF2
+pillow
+rembg[cpu,cli]
+onnxruntime
+pytesseract
