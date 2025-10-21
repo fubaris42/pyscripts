@@ -1,8 +1,6 @@
-pymupdf
-pillow
-rembg[cpu,cli]
-onnxruntime
 pytesseract
-black
+pymupdf
 fastmrz
-pyinstaller
+pillow
+onnxruntime
+rembg[cpu,cli]

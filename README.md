@@ -4,7 +4,7 @@
 
 ### 1. install latest python version supported by [onnxruntime](https://github.com/microsoft/onnxruntime), use [pyenv](https://github.com/pyenv/pyenv) if necessary
 
-### 2. install python requirements in `requrements.txt`
+### 2. install python requirements in `requirements.txt`
 
 ```sh
 pip install -r requirements.txt
