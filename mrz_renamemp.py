@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+# TODO : SIMPLIFY & USE THREADING
+
 import re
 import warnings
 from pathlib import Path

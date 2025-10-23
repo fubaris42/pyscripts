@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 
+# TODO : USE MULTI THREAD INSTEAD
+
 import os
 import fitz  # PyMuPDF
 import pytesseract
 from PIL import Image
 import io
 from multiprocessing import Pool, cpu_count
-from pathlib import Path
 
 INPUT_DIR = "."
 OUTPUT_DIR = "ocr_output"

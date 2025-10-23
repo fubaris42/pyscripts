@@ -1,6 +1,4 @@
-pytesseract
 pymupdf
-fastmrz
 pillow
 onnxruntime
 rembg[cpu,cli]
