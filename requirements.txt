@@ -1,8 +1,7 @@
 pymupdf
 pillow
-onnxruntime
-rembg[cpu,cli]
-
 pytesseract
 fastmrz
 black
+deepface
+tf-keras

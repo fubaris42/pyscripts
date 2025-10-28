@@ -1,86 +1,185 @@
 #!/usr/bin/env python3
 
-import sys
+# DeepFace-based script for 3:4 portrait cropping centered on the face.
+# Uses RetinaFace backend for robust detection.
+
 from pathlib import Path
 from PIL import Image
 import numpy as np
-from rembg import new_session, remove  # Ensure rembg is installed: pip install rembg
+from deepface import DeepFace  # New dependency for robust face detection
 
 # --- Configuration ---
-# Supported image extensions (case-insensitive check)
 SUPPORTED_EXT = {".png", ".jpg", ".jpeg"}
+# Set the desired detector backend for DeepFace
+DEEPFACE_DETECTOR = (
+    "retinaface"  # Options: 'opencv', 'ssd', 'dlib', 'mtcnn', 'retinaface', 'mediapipe'
+)
 
-# Initialize rembg session once
-try:
-    # Use "u2net" for general objects or "u2net_human_seg" for people
-    REMBG_SESSION = new_session("u2net_human_seg")
-except Exception as e:
-    print(f"Error initializing rembg session: {e}", file=sys.stderr)
-    print(
-        "Please ensure rembg is installed correctly (pip install rembg) and models are available."
-    )
-    sys.exit(1)
+# --- PORTRAIT TUNING CONFIGURATION ---
+# These constants control the final crop composition. Adjust them for fine-tuning.
+PORTRAIT_ASPECT_RATIO = 3 / 4  # The target aspect ratio (3/4 = 0.75 for portrait)
+VERTICAL_EXPANSION_FACTOR = (
+    1.8  # Controls vertical context: 1.8x face height for overall crop height
+)
+FACE_HORIZONTAL_PADDING = (
+    1.1  # Controls min horizontal padding: 1.1 = 10% total padding around face
+)
+FACE_VERTICAL_ANCHOR = (
+    0.23  # Controls head space: 0.23 means face starts 23% down from the top edge
+)
+# -------------------------------------
+
+print(f"DeepFace initialized with detector backend: {DEEPFACE_DETECTOR}")
 
 
-def get_subject_bbox(img: Image.Image) -> tuple[int, int, int, int] | None:
+# ----------------------------------------------------------------------
+# NEW FUNCTION: Face Detection using DeepFace
+# ----------------------------------------------------------------------
+def get_face_bbox(img: Image.Image) -> tuple[int, int, int, int] | None:
     """
-    Finds the bounding box of the main subject in the image using rembg's mask.
-    Returns (x0, y0, x1, y1) or None if no subject is found.
+    Detects the largest face in the image using DeepFace with the RetinaFace backend.
+    Returns (x0, y0, x1, y1) in PIL format (left, top, right, bottom).
     """
-    # 1. Generate mask
-    result = remove(img, session=REMBG_SESSION, only_mask=True)
+    # Convert PIL Image to NumPy array (DeepFace handles internal format conversion)
+    img_np = np.array(img.convert("RGB"))
 
-    # 2. Convert mask to numpy array
-    mask_np = np.array(result.convert("L"))
+    try:
+        # DeepFace detection call
+        detected_faces = DeepFace.extract_faces(
+            img_path=img_np,
+            detector_backend=DEEPFACE_DETECTOR,
+            enforce_detection=False,  # Set to False to prevent errors if no face is found
+            align=False,  # We don't need alignment for simple bounding box extraction
+        )
 
-    # 3. Find coordinates where the mask is active (subject area)
-    binary = mask_np > 10  # Threshold for the mask to be considered valid
-    coords = np.argwhere(binary)
+        # Filter out cases where detection returned an empty list or None
+        if not detected_faces or not any("facial_area" in d for d in detected_faces):
+            return None
 
-    if coords.size == 0:
-        return None  # No subject found
+        # Select the largest face by area
+        largest_face_data = max(
+            detected_faces, key=lambda d: d["facial_area"]["w"] * d["facial_area"]["h"]
+        )
 
-    # 4. Determine BBox (min/max coordinates)
-    y0, x0 = coords.min(axis=0)
-    y1, x1 = coords.max(axis=0)
+        area = largest_face_data["facial_area"]
+        x, y, w, h = area["x"], area["y"], area["w"], area["h"]
 
-    # PIL crop expects (left, top, right, bottom) which is (x0, y0, x1, y1)
-    return (x0, y0, x1, y1)
+        # Convert DeepFace/OpenCV format (x, y, w, h) to PIL format (x0, y0, x1, y1)
+        return (x, y, x + w, y + h)
+
+    except Exception as e:
+        # DeepFace can sometimes raise exceptions even with enforce_detection=False
+        print(f"DeepFace detection failed on image: {e}")
+        return None
 
 
-def crop_subject_and_save(input_path: Path, output_path: Path):
+# ----------------------------------------------------------------------
+# ASPECT RATIO CROP FUNCTION (SIMPLIFIED)
+# ----------------------------------------------------------------------
+def calculate_3_4_crop(
+    face_bbox: tuple[int, int, int, int],
+    img_width: int,
+    img_height: int,
+) -> tuple[int, int, int, int]:
     """
-    Opens an image, finds the subject bounding box, crops the image,
-    and saves it to the target path, preserving the original extension.
+    Calculates a 3:4 aspect ratio bounding box based on the face_bbox,
+    using global tuning constants for portrait composition.
+    """
+    x0_face, y0_face, x1_face, y1_face = face_bbox
+    w_face = x1_face - x0_face
+    h_face = y1_face - y0_face
+
+    # 1. Determine the ideal crop height (H_crop) based on the face and global factor
+    H_crop_initial = int(h_face * VERTICAL_EXPANSION_FACTOR)
+
+    # 2. Determine the required crop width (W_crop) based on H_crop and global ratio
+    W_crop = int(H_crop_initial * PORTRAIT_ASPECT_RATIO)
+
+    # If the required width is too small to contain the face (based on padding factor), adjust W_crop and H_crop
+    if W_crop < w_face * FACE_HORIZONTAL_PADDING:
+        W_crop = int(w_face * FACE_HORIZONTAL_PADDING)
+        H_crop = int(W_crop / PORTRAIT_ASPECT_RATIO)
+    else:
+        H_crop = H_crop_initial
+
+    # 3. Determine the final BBox coordinates
+
+    # Calculate desired vertical placement (y0_crop) using the global anchor
+    y0_crop = int(y0_face - H_crop * FACE_VERTICAL_ANCHOR)
+    y1_crop = y0_crop + H_crop
+
+    # Calculate horizontal placement (x0_crop) - center the face within the crop
+    cx_face = (x0_face + x1_face) / 2
+    x0_crop = int(cx_face - W_crop / 2)
+    x1_crop = x0_crop + W_crop
+
+    # 4. Clip the crop box to the image boundaries
+
+    # Clip horizontally
+    dx = 0
+    if x0_crop < 0:
+        dx = -x0_crop
+    elif x1_crop > img_width:
+        dx = img_width - x1_crop
+    x0_crop += dx
+    x1_crop += dx
+
+    # Clip vertically
+    dy = 0
+    if y0_crop < 0:
+        dy = -y0_crop
+    elif y1_crop > img_height:
+        dy = img_height - y1_crop
+    y0_crop += dy
+    y1_crop += dy
+
+    # Ensure coordinates are within bounds after shifting
+    x0_final = max(0, int(x0_crop))
+    y0_final = max(0, int(y0_crop))
+    x1_final = min(img_width, int(x1_crop))
+    y1_final = min(img_height, int(y1_crop))
+
+    return (x0_final, y0_final, x1_final, y1_final)
+
+
+# ----------------------------------------------------------------------
+# MAIN PROCESSING FUNCTION (Logic retained)
+# ----------------------------------------------------------------------
+def crop_face_portrait_and_save(input_path: Path, output_path: Path):
+    """
+    Opens an image, finds the face bounding box, calculates a 3:4 crop
+    centered on the face, and saves it.
     """
     try:
-        # 1. Open and convert to RGB for consistent processing
+        # 1. Open and convert to RGB
         img = Image.open(input_path).convert("RGB")
+        img_width, img_height = img.size
 
-        # 2. Get BBox
-        bbox = get_subject_bbox(img)
+        # 2. Get Face BBox
+        face_bbox = get_face_bbox(img)
 
-        if bbox:
-            # 3. Crop
-            cropped = img.crop(bbox)
+        if face_bbox:
+            # 3. Calculate 3:4 Aspect Ratio BBox anchored by the face
+            # Note: No tuning params passed here, they are read from globals
+            crop_bbox = calculate_3_4_crop(face_bbox, img_width, img_height)
 
-            # 4. Determine save format based on original extension
-            output_extension = input_path.suffix.upper()[1:]  # e.g., PNG, JPEG
+            # 4. Crop using PIL
+            cropped = img.crop(crop_bbox)
 
-            # Use 'JPEG' format for both .JPG and .JPEG extensions
+            # 5. Determine save format
+            output_extension = input_path.suffix.upper()[1:]
             output_format = (
                 "JPEG" if output_extension in ("JPG", "JPEG") else output_extension
             )
 
-            # 5. Save the cropped image
-            # Note: We save using the output_path which retains the original extension
+            # 6. Save the cropped image
             cropped.save(output_path, format=output_format)
 
             print(
-                f"Cropped and saved: {input_path.relative_to(Path.cwd())} → {output_path.name}"
+                f"Cropped (3:4, Face-anchored) and saved: {input_path.relative_to(Path.cwd())} → {output_path.name}"
             )
         else:
-            print(f"No subject found in {input_path.name}, skipped.")
+            print(f"No face found in {input_path.name}, skipped.")
 
     except Exception as e:
         print(f"🛑 Failed to process {input_path.name}: {e}")
@@ -91,6 +190,7 @@ def process_directory(input_dir: Path, output_dir: Path):
     Recursively scans the input directory, processes supported images,
     and saves them to the output directory while maintaining the relative structure.
     """
+    # DeepFace models are often loaded lazily/automatically upon first call
 
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -102,37 +202,30 @@ def process_directory(input_dir: Path, output_dir: Path):
     # Use rglob to find all files recursively
     for source_path in input_dir.rglob("*"):
 
-        # --- FIX: Skip anything (files or directories) that is inside the output folder ---
+        # Skip anything inside the output folder
         if source_path.is_relative_to(output_dir):
             continue
 
-        # 1. Skip directories (we only want to process files)
         if source_path.is_dir():
             continue
 
-        # 2. Check if the file is a supported image type
         if source_path.suffix.lower() in SUPPORTED_EXT:
-
-            # 3. Preserve directory structure
-            # Get the path relative to the input_dir
+            # Preserve directory structure
             rel_path = source_path.parent.relative_to(input_dir)
-
-            # Create the corresponding target directory path
             target_dir = output_dir / rel_path
             target_dir.mkdir(parents=True, exist_ok=True)
 
-            # The target file path keeps the original filename and extension
             target_file_path = target_dir / source_path.name
 
-            # 4. Process the image
-            crop_subject_and_save(source_path, target_file_path)
+            # Process the image
+            crop_face_portrait_and_save(source_path, target_file_path)
 
 
 # --- Run ---
 if __name__ == "__main__":
     # Define directories relative to the current working directory
     input_directory = Path.cwd()
-    output_directory = input_directory / "cropped_subject_original_bg"
+    output_directory = input_directory / "deepface_3_4_portrait_crops"
 
     process_directory(input_directory, output_directory)
 

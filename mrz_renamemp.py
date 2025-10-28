@@ -4,11 +4,14 @@
 # 1. Handles missing MRZ data by renaming the file with an "UNIDENTIFIABLE_MRZ_" prefix.
 # 2. Improved duplicate handling to ensure clean incrementing (_1, _2, etc.).
 # 3. Keeps the original file suffix (e.g., .jpeg).
+# 4. Applies gamma correction (0.7) before binarization for better text contrast.
+# 5. NEW: Moved tuning constants to a dedicated configuration block for maintenance.
 
 import re
 import warnings
 from pathlib import Path
 from PIL import Image, ImageOps
+import numpy as np
 from fastmrz import FastMRZ
 from concurrent.futures import ThreadPoolExecutor
 from multiprocessing import cpu_count
@@ -17,14 +20,35 @@ import os
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
+# --- GLOBAL CONFIGURATION ---
 SUPPORTED_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
+
+# Preprocessing Tuning Parameters (Adjust these values for better MRZ detection)
+GAMMA_CORRECTION_VALUE = 0.7  # Lower value (e.g., 0.5) darkens text more.
+BINARIZATION_THRESHOLD = (
+    157  # Pixels darker than this become black (0). Default is often 120-150.
+)
+UNIDENTIFIABLE_MRZ_PREFIX = "UNIDENTIFIABLE_MRZ"  # Fallback name prefix
+# ----------------------------
 
 
 def preprocess_image(path: Path) -> Path:
-    """Preprocesses the image for better MRZ detection (Grayscale, Autocontrast, Binarization)."""
+    """
+    Preprocesses the image for better MRZ detection (Grayscale, Gamma Correction,
+    Autocontrast, Binarization).
+    """
     image = Image.open(path).convert("L")
+
+    # --- Gamma Correction (Uses global constant) ---
+    gamma = GAMMA_CORRECTION_VALUE
+    # Build a gamma lookup table (256 entries)
+    gamma_table = [int((i / 255.0) ** gamma * 255) for i in range(256)]
+    image = image.point(gamma_table)
+    # -----------------------------------------------
+
     image = ImageOps.autocontrast(image)
-    image = image.point(lambda x: 0 if x < 120 else 255).convert("RGB")  # type: ignore[reportOperatorIssue]
+    # Binarization: Convert pixels below the threshold to black (0), others to white (255)
+    image = image.point(lambda x: 0 if x < BINARIZATION_THRESHOLD else 255).convert("RGB")  # type: ignore[reportOperatorIssue]
 
     tmp_path = path.with_name(f"tmp_{path.name}")
     image.save(tmp_path)
@@ -47,9 +71,8 @@ def rename_file_with_mrz(file_path: Path):
         base_name = ""
 
         if not isinstance(mrz_raw, str) or not mrz_raw.strip():
-            # --- MODIFICATION 1: Handle unidentifiable/empty MRZ ---
-            base_name = "UNIDENTIFIABLE_MRZ"
-            # Return status early, using the unidentifiable prefix as the base name
+            # Handle unidentifiable/empty MRZ using global constant
+            base_name = UNIDENTIFIABLE_MRZ_PREFIX
         else:
             # Sanitize the MRZ string for use as a filename
             name = re.sub(
@@ -57,8 +80,7 @@ def rename_file_with_mrz(file_path: Path):
             )
             base_name = re.sub(r"_+", "_", name).strip("_")
 
-        # --- MODIFICATION 2: Robust Duplicate Handling ---
-        # The base_name is guaranteed to be non-empty (either sanitized MRZ or "UNIDENTIFIABLE_MRZ")
+        # Robust Duplicate Handling
 
         # 1. Set the initial proposed new file path
         new_name_stem = base_name
@@ -75,7 +97,7 @@ def rename_file_with_mrz(file_path: Path):
 
         file_path.rename(new_path)
 
-        if base_name == "UNIDENTIFIABLE_MRZ":
+        if base_name == UNIDENTIFIABLE_MRZ_PREFIX:
             return f"[?] Unidentifiable MRZ, renamed: {file_path.name} → {new_name}"
         else:
             return f"[✓] {file_path.name} → {new_name}"
