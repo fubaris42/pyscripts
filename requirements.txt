@@ -5,3 +5,5 @@ fastmrz
 black
 deepface
 tf-keras
+onnxruntime
+rembg[cpu,cli]
